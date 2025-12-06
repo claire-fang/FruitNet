@@ -9,10 +9,6 @@ A comprehensive fruit detection and segmentation system supporting both **YOLOv8
 - [Setup & Installation](#setup--installation)
 - [Data Preparation](#data-preparation--management)
 - [Training Models](#training-models)
-- [GPU & Hardware](#gpu--hardware-information)
-- [Output & Results](#training-output--results)
-- [Advanced Usage](#advanced-data-preprocessing)
-- [Troubleshooting](#troubleshooting)
 
 ## Project Overview
 
