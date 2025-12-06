@@ -1,0 +1,12 @@
+# Training images and labels
+train: images/train
+val: images/val
+test: images/test
+
+# Number of classes
+nc: 2
+
+# Class names (must match your annotation labels)
+names:
+  0: non warm-colored fruit
+  1: warm-colored fruit

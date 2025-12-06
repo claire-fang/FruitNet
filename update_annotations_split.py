@@ -40,6 +40,7 @@ def update_annotations_split(
             print(f"  Found {len(label_files)} files in {split_type}/")
     
     print(f"\nTotal images found: {len(image_to_split)}")
+    # print(image_to_split.keys())
     
     # Read source CSV
     print(f"\nReading source annotations from: {source_csv_path}")
@@ -56,6 +57,7 @@ def update_annotations_split(
     
     for row in rows:
         file_name = row.get('file_name')
+        # print(file_name)
         
         if file_name in image_to_split:
             old_value = row.get('train_test_validation', '')
@@ -102,13 +104,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--source_csv",
         type=str,
-        default="/data/fjx/FruitNet/source_annotations.csv",
+        default="./source_annotations.csv",
         help="Path to source_annotations.csv"
     )
     parser.add_argument(
         "--split_labels",
         type=str,
-        default="/data/fjx/FruitNet/dataset124/split_dataset/labels",
+        default="./split_dataset/labels",
         help="Path to split_dataset/labels directory"
     )
     parser.add_argument(
