@@ -22,11 +22,31 @@ def convert_yolo_box_to_corners(xc, yc, bw, bh, W, H):
 
     return x1, y1, x2, y2
 
+def pixel_accuracy(preds, masks, ignore_index=255):
+    """
+    preds: B×C×H×W logits
+    masks: B×1×H×W ground truth
+    """
+    # Get predicted class per pixel
+    preds_class = preds.argmax(dim=1)  # B×H×W
+    masks = masks.squeeze(1)           # B×H×W
+
+    # Create mask of valid pixels
+    valid = (masks != ignore_index)
+
+    correct = (preds_class == masks) & valid
+    acc = correct.sum().float() / valid.sum().float()
+    return acc.item()
+
+
 class FruitNetDataset(Dataset):
-    def __init__(self, root_path, mode="train", transform=None):
+    def __init__(self, root_path, mode="train", transform=None, n_classes=67, ignore_index=255):
         self.root = root_path
         self.transform = transform
+        self.n_classes = n_classes
+        self.ignore_index = ignore_index
 
+        # Load CSV
         df = pd.read_csv(os.path.join(root_path, "source_annotations.csv"))
         df = df[(df["warm_color_binary"] == 1) & (df["mask_path"].notna())]
 
@@ -51,13 +71,17 @@ class FruitNetDataset(Dataset):
     def load_mask(self, path):
         mask = Image.open(path).convert("RGB")
         mask = np.array(mask)
-        mask = np.max(mask, axis=-1, keepdims=True)  # reduce 3 channels → 1
+        mask = np.max(mask, axis=-1)  # reduce 3 channels → 1
+
+        # Handle out-of-range values
+        mask = np.where((mask >= 0) & (mask < self.n_classes), mask, self.ignore_index)
+
         return mask
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
 
-        img_path = f"{self.root}/images/test/{row['image_path']}"
+        img_path = f"{self.root}/images/{row['image_path']}"
         mask_path = f"{self.root}/masks_agg/{row['file_name']}.png"
 
         img = self.load_image(img_path)
@@ -65,7 +89,7 @@ class FruitNetDataset(Dataset):
 
         H, W = img.shape[:2]
 
-        # YOLO bounding box
+        # YOLO bounding box crop
         xc, yc, bw, bh = row["x_center"], row["y_center"], row["width"], row["height"]
         x1, y1, x2, y2 = convert_yolo_box_to_corners(
             torch.tensor(xc), torch.tensor(yc),
@@ -76,15 +100,15 @@ class FruitNetDataset(Dataset):
         img_crop = img[y1:y2+1, x1:x2+1]
         mask_crop = mask[y1:y2+1, x1:x2+1]
 
-        # Resize to 96×128 manually
+        # Resize to 96×128
         img_crop = Image.fromarray((img_crop).astype(np.uint8)).resize((128, 96), Image.NEAREST)
-        mask_crop = Image.fromarray(mask_crop.squeeze().astype(np.uint8)).resize((128, 96), Image.NEAREST)
+        mask_crop = Image.fromarray(mask_crop.astype(np.uint8)).resize((128, 96), Image.NEAREST)
 
         img_crop = np.array(img_crop) / 255.0
-        mask_crop = np.array(mask_crop) / 255.0
+        mask_crop = np.array(mask_crop)
 
         img_crop = torch.tensor(img_crop).permute(2, 0, 1).float()  # HWC → CHW
-        mask_crop = torch.tensor(mask_crop).unsqueeze(0).float()    # 1×H×W
+        mask_crop = torch.tensor(mask_crop).long().unsqueeze(0)      # 1×H×W
 
         return img_crop, mask_crop
 
@@ -171,19 +195,31 @@ class UNet(nn.Module):
         return self.out_conv(u9)
 
 def main():
-    train_ds = FruitNetDataset(root_path="./archivedDataset/wholefood", mode="train")
-    train_loader = DataLoader(train_ds, batch_size=8, shuffle=True)
+    train_ds = FruitNetDataset(root_path="./dataset124", mode="train")
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=32,
+        shuffle=True,
+        num_workers=16,
+        pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True
+    )
 
-    model = UNet(n_classes=23).cuda()
+    # train_loader = DataLoader(train_ds, batch_size=8, shuffle=True)
+
+    model = UNet(n_classes=67).cuda()
+    model = torch.nn.DataParallel(model)
     print("CUDA available:", torch.cuda.is_available())
     print("Device count:", torch.cuda.device_count())
     if torch.cuda.is_available():
         print("Current device:", torch.cuda.current_device())
         print("Device name:", torch.cuda.get_device_name(0))
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.CrossEntropyLoss(ignore_index=255) # ignore the background
 
-    for epoch in range(10):
+    for epoch in range(100):
+        epoch_acc = 0.0
         for images, masks in train_loader:
             images = images.cuda()
             masks = masks.squeeze(1).long().cuda()  # shape B×H×W
@@ -194,7 +230,15 @@ def main():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+        
+        save_path = f"unet_checkpoints/unet_epoch_{epoch}.pth"
+        torch.save(model.module.state_dict() if isinstance(model, torch.nn.DataParallel) 
+                else model.state_dict(), 
+                save_path)
+        print(f"Saved model to {save_path}")
 
+        epoch_acc += pixel_accuracy(preds, masks)
+        print(f"Epoch {epoch} pixel accuracy = {epoch_acc:.4f}")
         print(f"Epoch {epoch} loss = {loss.item()}")
 
 if __name__ == "__main__":
